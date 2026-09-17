@@ -3,8 +3,26 @@
 import os
 import tempfile
 import unittest
+from unittest.mock import patch
 
 import main
+
+
+class TestParseArgs(unittest.TestCase):
+    def test_prompts_for_release_candidates_in_interactive_mode(self):
+        argv = ["main.py", "-c", "collection", "-v", "26.3", "-l", "fabric"]
+        with patch("sys.argv", argv), patch.object(main, "safe_input", side_effect=["y", "n"]):
+            args = main.parse_args()
+
+        self.assertTrue(args.allow_release_candidates)
+
+    def test_fully_specified_cli_does_not_prompt(self):
+        argv = ["main.py", "-c", "collection", "-v", "26.3", "-l", "fabric", "--no-update"]
+        with patch("sys.argv", argv), patch.object(main, "safe_input") as safe_input:
+            args = main.parse_args()
+
+        safe_input.assert_not_called()
+        self.assertFalse(args.allow_release_candidates)
 
 
 class TestExtractCollectionId(unittest.TestCase):
@@ -168,6 +186,63 @@ class TestGetLatestVersion(unittest.TestCase):
         )
         self.assertIsNone(got)
 
+    def test_release_candidate_fallback_is_disabled_by_default(self):
+        versions = [
+            {"game_versions": ["26.3-rc-3"], "loaders": ["fabric"], "id": "rc"},
+        ]
+        got = main.get_latest_version(
+            self._FakeClient(versions), "x", "26.3", "fabric", "mod"
+        )
+        self.assertIsNone(got)
+
+    def test_exact_release_wins_over_release_candidate(self):
+        versions = [
+            {"game_versions": ["26.3-rc-3"], "loaders": ["fabric"], "id": "rc"},
+            {"game_versions": ["26.3"], "loaders": ["fabric"], "id": "release"},
+        ]
+        got = main.get_latest_version(
+            self._FakeClient(versions),
+            "x",
+            "26.3",
+            "fabric",
+            "mod",
+            allow_release_candidates=True,
+        )
+        self.assertEqual(got["id"], "release")
+
+    def test_picks_release_candidate(self):
+        versions = [
+            {
+                "game_versions": ["26.3-rc-3", "26.3-rc-2", "26.3-rc-1"],
+                "loaders": ["fabric"],
+                "id": "rc",
+            },
+        ]
+        got = main.get_latest_version(
+            self._FakeClient(versions),
+            "x",
+            "26.3",
+            "fabric",
+            "mod",
+            allow_release_candidates=True,
+        )
+        self.assertEqual(got["id"], "rc")
+
+    def test_ignores_pre_snapshot_and_wrong_loader(self):
+        versions = [
+            {"game_versions": ["26.3-pre-3"], "loaders": ["fabric"]},
+            {"game_versions": ["26.3-snapshot-10"], "loaders": ["fabric"]},
+            {"game_versions": ["26.3-rc-4"], "loaders": ["forge"]},
+        ]
+        got = main.get_latest_version(
+            self._FakeClient(versions),
+            "x",
+            "26.3",
+            "fabric",
+            "mod",
+            allow_release_candidates=True,
+        )
+        self.assertIsNone(got)
 
 if __name__ == "__main__":
     unittest.main()

@@ -108,6 +108,11 @@ def parse_args():
         "-v", "--version", default=None, help='Minecraft version (e.g., "26.2").'
     )
     parser.add_argument(
+        "--allow-release-candidates",
+        action="store_true",
+        help='Allow release candidates (e.g., "26.3-rc-3") when no exact Minecraft version is available.',
+    )
+    parser.add_argument(
         "-l",
         "--loader",
         default=None,
@@ -138,6 +143,7 @@ def parse_args():
         help="Do not update existing mods",
     )
     args = parser.parse_args()
+    interactive = not args.collection or not args.version or args.loader is None or args.update is None
     
     # Prompt for missing required values (works even when piped via /dev/tty)
     if not args.collection:
@@ -145,6 +151,12 @@ def parse_args():
     
     if not args.version:
         args.version = safe_input('Enter Minecraft version (e.g., "26.2"): ').strip()
+
+    if interactive and not args.allow_release_candidates:
+        release_candidate_input = safe_input(
+            "Allow release candidates if no exact version is available? [y/N]: "
+        ).strip().lower()
+        args.allow_release_candidates = release_candidate_input in ('y', 'yes', 'true', '1')
 
     if args.loader is None:
         loader_input = safe_input(
@@ -276,13 +288,14 @@ def get_latest_version(
     version: str,
     loader: str,
     project_type: str = "mod",
+    allow_release_candidates: bool = False,
 ) -> Optional[dict]:
     """Get the latest version of a mod matching the specified version and loader."""
     mod_versions_data = modrinth_client.get_mod_version(mod_id)
     if not mod_versions_data:
         return None
 
-    mod_version_to_download = next(
+    exact_version = next(
         (
             mod_version
             for mod_version in mod_versions_data
@@ -291,7 +304,22 @@ def get_latest_version(
         ),
         None,
     )
-    return mod_version_to_download
+    if exact_version or not allow_release_candidates:
+        return exact_version
+
+    release_candidate_pattern = re.compile(rf"{re.escape(version)}-rc-\d+")
+    return next(
+        (
+            mod_version
+            for mod_version in mod_versions_data
+            if any(
+                release_candidate_pattern.fullmatch(game_version)
+                for game_version in mod_version.get("game_versions", [])
+            )
+            and _version_matches_loader(mod_version, loader, project_type)
+        ),
+        None,
+    )
 
 
 def resolve_target_directory(
@@ -317,6 +345,7 @@ def download_mod(
     existing_mods: Dict[str, Dict[str, str]],
     stats: Dict[str, int],
     failed_mods: List[str],
+    allow_release_candidates: bool = False,
     processed_mods: Optional[set] = None,
     is_dependency: bool = False,
     parent_mod_id: Optional[str] = None,
@@ -373,7 +402,7 @@ def download_mod(
                 stats["main_skipped"] = stats.get("main_skipped", 0) + 1
             # Still process dependencies even if mod is skipped
             latest_mod = get_latest_version(
-                modrinth_client, mod_id, version, loader, project_type
+                modrinth_client, mod_id, version, loader, project_type, allow_release_candidates
             )
             if latest_mod:
                 _process_dependencies(
@@ -389,11 +418,12 @@ def download_mod(
                     failed_mods,
                     processed_mods,
                     mod_id,
+                    allow_release_candidates,
                 )
             return
 
         latest_mod = get_latest_version(
-            modrinth_client, mod_id, version, loader, project_type
+            modrinth_client, mod_id, version, loader, project_type, allow_release_candidates
         )
         # import json
         # print("=" * 50)
@@ -437,6 +467,7 @@ def download_mod(
             failed_mods,
             processed_mods,
             mod_id,
+            allow_release_candidates,
         )
 
         # Find primary file
@@ -617,6 +648,7 @@ def _process_dependencies(
     failed_mods: List[str],
     processed_mods: set,
     parent_mod_id: str,
+    allow_release_candidates: bool,
 ) -> None:
     """Process required dependencies for a mod version.
     
@@ -651,6 +683,7 @@ def _process_dependencies(
             existing_mods,
             stats,
             failed_mods,
+            allow_release_candidates,
             processed_mods,
             is_dependency=True,
             parent_mod_id=parent_mod_id,
@@ -711,6 +744,7 @@ def main():
                 existing_mods,
                 stats,
                 failed_mods,
+                args.allow_release_candidates,
             )
             for mod_id in mods
         ]
